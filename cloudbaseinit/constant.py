@@ -13,11 +13,12 @@
 #    under the License.
 
 # Config Drive types and possible locations.
-CD_TYPES = {
-    "vfat",    # Visible device (with partition table).
+# This order is respected.
+CD_TYPES = [
     "iso",     # "Raw" format containing ISO bytes.
-}
-CD_LOCATIONS = {
+    "vfat",    # Visible device (with partition table).
+]
+CD_LOCATIONS = [
     # Look into optical devices. Only an ISO format could be
     # used here (vfat ignored).
     "cdrom",
@@ -27,7 +28,7 @@ CD_LOCATIONS = {
     # Search through partitions for raw ISO content or through volumes
     # containing configuration drive's content.
     "partition",
-}
+]
 
 POLICY_IGNORE_ALL_FAILURES = "ignoreallfailures"
 

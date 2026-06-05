@@ -39,31 +39,38 @@ class BaseConfigDriveService(base.BaseMetadataService):
         self._metadata_file = metadata_file
         self._userdata_file = userdata_file
         self._metadata_path = None
-        self._searched_types = set()
-        self._searched_locations = set()
+        self._searched_types = list()
+        self._searched_locations = list()
 
     def _preprocess_options(self):
-        self._searched_types = set(CONF.config_drive.types)
-        self._searched_locations = set(CONF.config_drive.locations)
+        self._searched_types = sorted(set(CONF.config_drive.types))
+        self._searched_locations = sorted(set(CONF.config_drive.locations))
 
         # Deprecation backward compatibility.
-        if CONF.config_drive.raw_hdd:
-            self._searched_types.add("iso")
-            self._searched_locations.add("hdd")
         if CONF.config_drive.cdrom:
-            self._searched_types.add("iso")
-            self._searched_locations.add("cdrom")
+            self._searched_types.append("iso")
+            self._searched_locations.append("cdrom")
+        if CONF.config_drive.raw_hdd:
+            self._searched_types.append("iso")
+            self._searched_locations.append("hdd")
         if CONF.config_drive.vfat:
-            self._searched_types.add("vfat")
-            self._searched_locations.add("hdd")
+            self._searched_types.append("vfat")
+            self._searched_locations.append("hdd")
 
         # Check for invalid option values.
-        if self._searched_types | CD_TYPES != CD_TYPES:
+        SCD_TYPES = set(CD_TYPES)
+        if set(self._searched_types) | SCD_TYPES != SCD_TYPES:
             raise exception.CloudbaseInitException(
                 "Invalid Config Drive types %s", self._searched_types)
-        if self._searched_locations | CD_LOCATIONS != CD_LOCATIONS:
+        SCD_LOCATIONS = set(CD_LOCATIONS)
+        if set(self._searched_locations) | SCD_LOCATIONS != SCD_LOCATIONS:
             raise exception.CloudbaseInitException(
                 "Invalid Config Drive locations %s", self._searched_locations)
+        # Note(avladu): sort the order of the searched locations
+        # This is needed to be sure that the order is respected
+        # See: https://github.com/cloudbase/cloudbase-init/issues/200
+        self._searched_types = sorted(set(self._searched_types))
+        self._searched_locations = sorted(set(self._searched_locations))
 
     def load(self):
         super(BaseConfigDriveService, self).load()

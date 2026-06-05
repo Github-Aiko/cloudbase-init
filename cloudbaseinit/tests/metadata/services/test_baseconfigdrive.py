@@ -70,7 +70,7 @@ class TestBaseConfigDriveService(unittest.TestCase):
             "cdrom": False,
             "vfat": True,
             # Deprecated options above.
-            "types": ["vfat", "iso"],
+            "types": ["iso", "vfat"],
             "locations": ["partition"]
         }
         contexts = [testutils.ConfPatcher(key, value, group="config_drive")
@@ -78,9 +78,9 @@ class TestBaseConfigDriveService(unittest.TestCase):
         with contexts[0], contexts[1], contexts[2], \
                 contexts[3], contexts[4]:
             self._config_drive._preprocess_options()
-            self.assertEqual({"vfat", "iso"},
+            self.assertEqual(["iso", "vfat"],
                              self._config_drive._searched_types)
-            self.assertEqual({"hdd", "partition"},
+            self.assertEqual(["hdd", "partition"],
                              self._config_drive._searched_locations)
 
     def test_preprocess_options_fail(self):
