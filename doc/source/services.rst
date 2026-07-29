@@ -613,3 +613,32 @@ Config options for `default` section:
 
     * retry_count (integer: 5)
     * retry_count_interval (integer: 4)
+
+
+Oracle Cloud Service
+-----------------------------
+
+.. class:: cloudbaseinit.metadata.services.oraclecloudservice.OracleCloudService
+
+OCI IMDSv2 needs to be used when legacy IMDSv1 access is disabled.
+
+OCI IMDSv2 exposes instance metadata under `/opc/v2` and requires an
+`Authorization: Bearer Oracle` header on every request.
+
+Capabilities:
+
+    * instance id
+    * hostname
+    * user data
+
+Config options for `oraclecloud` section:
+
+    * metadata_base_url (string: http://169.254.169.254/")
+    * add_metadata_private_ip_route (bool: True)
+    * https_allow_insecure (bool: False)
+    * https_ca_bundle (string: None)
+
+Config options for `default` section:
+
+    * retry_count (integer: 5)
+    * retry_count_interval (integer: 4)
