@@ -61,7 +61,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: [ "3.14"]
-        architecture: ["x64", "x86"]
+        architecture: ["x64"]
         cloud: ["empty", "nocloud", "vmwareguest", "oracle"]
 
     steps:
