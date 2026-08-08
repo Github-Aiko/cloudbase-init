@@ -70,7 +70,7 @@ DETAIL_PREPROCESS = {
 
 
 def _get_iface_blocks(data):
-    """"Yield interface blocks as pairs of v4 and v6 halves."""
+    """Yield interface blocks as pairs of v4 and v6 halves."""
     lines, lines6 = [], []
     crt_lines = lines
     for line in data.splitlines():
@@ -80,13 +80,15 @@ def _get_iface_blocks(data):
         if "iface" in line:
             if "inet6" in line:
                 crt_lines = lines6
+                crt_lines.append(line)
+                continue
             if lines:
                 yield lines, lines6
             lines[:] = []
             lines6[:] = []
             crt_lines = lines
         crt_lines.append(line)
-    if lines:
+    if lines or lines6:
         yield lines, lines6
 
 
