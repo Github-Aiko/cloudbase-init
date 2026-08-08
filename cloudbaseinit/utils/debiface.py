@@ -32,6 +32,10 @@ BROADCAST = "broadcast"
 GATEWAY = "gateway"
 GATEWAY6 = "gateway6"
 DNSNS = "dnsnameservers"
+FAMILY = "family"
+IFACE = re.compile(r"^iface\s+(?P<{}>\S+)\s+"
+                   r"(?P<{}>inet6?)\s+static(?:\s|$)".format(
+                       NAME, FAMILY))
 # Fields of interest by regexps.
 FIELDS = {
     NAME: re.compile(r"iface\s+(?P<{}>\S+)"
@@ -62,6 +66,7 @@ V6_PROXY = {
     GATEWAY: GATEWAY6,
     NAME: NAME,
     MAC: MAC,
+    DNSNS: DNSNS,
 }
 DETAIL_PREPROCESS = {
     MAC: lambda value: value.upper(),
@@ -71,32 +76,38 @@ DETAIL_PREPROCESS = {
 
 def _get_iface_blocks(data):
     """Yield interface blocks as pairs of v4 and v6 halves."""
-    lines, lines6 = [], []
-    crt_lines = lines
-    crt_name = None
+    # Keep one pair of stanzas per interface. Proxmox normally emits the IPv4
+    # stanza immediately before the IPv6 stanza, but grouping by name also
+    # handles reversed or family-grouped configurations.
+    interfaces = {}
+    current_lines = None
     for line in data.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        if "iface" in line:
-            match = FIELDS[NAME].match(line)
-            name = match.group(NAME) if match else None
-            if "inet6" in line and name and name == crt_name:
-                # An inet6 stanza of the same interface: keep it in the
-                # current block as the v6 half instead of starting a new
-                # block, so both address families end up on one NIC.
-                crt_lines = lines6
-                crt_lines.append(line)
+
+        if re.match(r"^iface\s", line):
+            match = IFACE.match(line)
+            if not match:
+                # Do not associate lines from unsupported stanzas (for
+                # example loopback or DHCP) with the previous static NIC.
+                current_lines = None
                 continue
-            if lines:
-                yield lines, lines6
-            lines[:] = []
-            lines6[:] = []
-            crt_lines = lines
-            crt_name = name
-        crt_lines.append(line)
-    if lines or lines6:
-        yield lines, lines6
+
+            name = match.group(NAME)
+            family_index = 1 if match.group(FAMILY) == "inet6" else 0
+            current_lines = interfaces.setdefault(name, ([], []))[family_index]
+            current_lines.append(line)
+        elif current_lines is not None:
+            current_lines.append(line)
+
+    for lines, lines6 in interfaces.values():
+        if lines:
+            yield lines, lines6
+        else:
+            # Preserve the existing representation of an IPv6-only stanza:
+            # its address, netmask and gateway occupy the generic fields.
+            yield lines6, []
 
 
 def _get_field(line):

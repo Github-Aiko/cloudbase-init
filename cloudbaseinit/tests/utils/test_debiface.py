@@ -85,3 +85,72 @@ class TestInterfacesParser(unittest.TestCase):
 
     def test_parse(self):
         self._test_parse_nics()
+
+    def test_parse_proxmox_dual_stack(self):
+        data = """
+auto eth0
+iface eth0 inet static
+    hwaddress ether 52:54:00:12:34:56
+    address 192.0.2.10
+    netmask 255.255.255.0
+    gateway 192.0.2.1
+iface eth0 inet6 static
+    address 2001:db8::10
+    netmask 64
+    gateway 2001:db8::1
+    dns-nameservers 1.1.1.1 2606:4700:4700::1111
+"""
+
+        expected = network_model.NetworkDetails(
+            "eth0", "52:54:00:12:34:56".upper(),
+            "192.0.2.10", "2001:db8::10",
+            "255.255.255.0", "64", None,
+            "192.0.2.1", "2001:db8::1",
+            ["1.1.1.1", "2606:4700:4700::1111"])
+
+        self.assertEqual([expected], debiface.parse(data))
+
+    def test_parse_dual_stack_ipv6_first(self):
+        data = """
+iface eth0 inet6 static
+    address 2001:db8::20
+    netmask 64
+    gateway 2001:db8::1
+iface eth0 inet static
+    address 192.0.2.20
+    netmask 255.255.255.0
+    gateway 192.0.2.1
+"""
+
+        nics = debiface.parse(data)
+
+        self.assertEqual(1, len(nics))
+        self.assertEqual("eth0", nics[0].name)
+        self.assertEqual("192.0.2.20", nics[0].address)
+        self.assertEqual("2001:db8::20", nics[0].address6)
+        self.assertEqual("192.0.2.1", nics[0].gateway)
+        self.assertEqual("2001:db8::1", nics[0].gateway6)
+
+    def test_parse_family_grouped_dual_stack(self):
+        data = """
+iface eth0 inet static
+    address 192.0.2.30
+    netmask 255.255.255.0
+iface eth1 inet static
+    address 198.51.100.30
+    netmask 255.255.255.0
+iface eth1 inet6 static
+    address 2001:db8:1::30
+    netmask 64
+iface eth0 inet6 static
+    address 2001:db8::30
+    netmask 64
+"""
+
+        nics = debiface.parse(data)
+
+        self.assertEqual(["eth0", "eth1"], [nic.name for nic in nics])
+        self.assertEqual("192.0.2.30", nics[0].address)
+        self.assertEqual("2001:db8::30", nics[0].address6)
+        self.assertEqual("198.51.100.30", nics[1].address)
+        self.assertEqual("2001:db8:1::30", nics[1].address6)
