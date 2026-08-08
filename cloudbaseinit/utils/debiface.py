@@ -73,12 +73,18 @@ def _get_iface_blocks(data):
     """Yield interface blocks as pairs of v4 and v6 halves."""
     lines, lines6 = [], []
     crt_lines = lines
+    crt_name = None
     for line in data.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if "iface" in line:
-            if "inet6" in line:
+            match = FIELDS[NAME].match(line)
+            name = match.group(NAME) if match else None
+            if "inet6" in line and name and name == crt_name:
+                # An inet6 stanza of the same interface: keep it in the
+                # current block as the v6 half instead of starting a new
+                # block, so both address families end up on one NIC.
                 crt_lines = lines6
                 crt_lines.append(line)
                 continue
@@ -87,6 +93,7 @@ def _get_iface_blocks(data):
             lines[:] = []
             lines6[:] = []
             crt_lines = lines
+            crt_name = name
         crt_lines.append(line)
     if lines or lines6:
         yield lines, lines6
