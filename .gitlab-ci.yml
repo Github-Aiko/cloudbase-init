@@ -17,7 +17,7 @@ variables:
 default:
   tags:
     - windows
-    - windows-shell
+    - windows-runner-17
   cache:
     key: "pip-$CI_JOB_NAME_SLUG"
     paths:
