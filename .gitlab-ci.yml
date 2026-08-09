@@ -26,6 +26,63 @@ default:
   before_script:
     - |
       $ErrorActionPreference = "Stop"
+      function Initialize-MsvcEnvironment {
+          if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+              return
+          }
+
+          $vcvarsAll = $null
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere -PathType Leaf) {
+              $vcvarsAll = & $vswhere -latest -products * `
+                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                  -find "VC\Auxiliary\Build\vcvarsall.bat" |
+                  Select-Object -First 1
+          }
+
+          if (-not $vcvarsAll) {
+              $vcvarsCandidates = @(
+                  "$env:ProgramFiles\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat",
+                  "$env:ProgramFiles\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+                  "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+              )
+              $vcvarsAll = $vcvarsCandidates |
+                  Where-Object { Test-Path $_ -PathType Leaf } |
+                  Select-Object -First 1
+          }
+
+          if (-not $vcvarsAll) {
+              throw "Microsoft Visual C++ 14.0+ is required to build pymi. Install the Visual Studio 'Desktop development with C++' workload (Microsoft.VisualStudio.Workload.VCTools) on this runner."
+          }
+
+          Push-Location (Split-Path $vcvarsAll -Parent)
+          try {
+              $visualStudioEnvironment = & cmd.exe /d /c "vcvarsall.bat x86_amd64 && set"
+              if ($LASTEXITCODE -ne 0) {
+                  throw "vcvarsall.bat failed with exit code $LASTEXITCODE."
+              }
+          }
+          finally {
+              Pop-Location
+          }
+
+          foreach ($line in $visualStudioEnvironment) {
+              if ($line -notmatch "^[^=][^=]*=") {
+                  continue
+              }
+              $name, $value = $line -split "=", 2
+              Set-Item -Force -Path "Env:$name" -Value $value
+          }
+
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+              throw "vcvarsall.bat completed, but cl.exe is still unavailable. Repair the Visual C++ x64/x86 build tools workload."
+          }
+          Write-Host "Using MSVC: $((Get-Command cl.exe).Source)"
+      }
+
+      Initialize-MsvcEnvironment
+
       function Test-Python314 {
           param(
               [Parameter(Mandatory = $true)]
