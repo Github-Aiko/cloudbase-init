@@ -18,6 +18,17 @@ default:
   tags:
     - windows
     - windows-runner-17
+  hooks:
+    pre_get_sources_script:
+      - |
+        $staleConfigDrive = Join-Path $env:CI_PROJECT_DIR `
+            "test-resources\cloudbase-init-config-drive.iso"
+        if (Test-Path $staleConfigDrive -PathType Leaf) {
+            Write-Host "Dismounting stale functional-test config drive"
+            Dismount-DiskImage -ImagePath $staleConfigDrive `
+                -ErrorAction SilentlyContinue
+            Remove-Item $staleConfigDrive -Force -ErrorAction Stop
+        }
   cache:
     key: "pip-$CI_JOB_NAME_SLUG"
     paths:
@@ -226,6 +237,15 @@ windows-functional-tests:
       }
 
       Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins
+  after_script:
+    - |
+      $configDrive = Join-Path $env:CI_PROJECT_DIR `
+          "test-resources\cloudbase-init-config-drive.iso"
+      if (Test-Path $configDrive -PathType Leaf) {
+          Dismount-DiskImage -ImagePath $configDrive `
+              -ErrorAction SilentlyContinue
+          Remove-Item $configDrive -Force -ErrorAction SilentlyContinue
+      }
   artifacts:
     when: always
     expire_in: 14 days
