@@ -77,32 +77,203 @@ jobs:
       run: |
         git clone %TEST_RESOURCES% -b %TEST_RESOURCES_BRANCH% test-resources
         python -W ignore -m pip install --upgrade pip
+    - name: Prepare functional test fixture
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $cloudProfile = "${{ matrix.cloud }}"
+        $functionalTestsFile = "test-resources/functional-tests/CloudbaseInit.Tests.ps1"
+        $functionalTests = Get-Content $functionalTestsFile -Raw
+
+        if ($cloudProfile -eq "vmwareguest") {
+            $pipCommand = "& pip.exe install pyinstaller"
+            $pyInstallerCommand = '& pyinstaller -F "${rpcToolPyPath}"'
+            if (-not $functionalTests.Contains($pipCommand) -or
+                -not $functionalTests.Contains($pyInstallerCommand)) {
+                throw "The upstream VMware preparation helper has changed unexpectedly."
+            }
+            $functionalTests = $functionalTests.Replace(
+                $pipCommand,
+                "python -m pip install pyinstaller").Replace(
+                $pyInstallerCommand,
+                'python -m PyInstaller -F "${rpcToolPyPath}"')
+        }
+
+        if ($cloudProfile -eq "nocloud") {
+            $configFile = "test-resources/nocloud/cloudbase-init.conf"
+            $listenerPlugin = "cloudbaseinit.plugins.windows.winrmlistener.ConfigWinRMListenerPlugin"
+            $certificateAuthPlugin = "cloudbaseinit.plugins.windows.winrmcertificateauth.ConfigWinRMCertificateAuthPlugin"
+            $setPasswordPlugin = "cloudbaseinit.plugins.common.setuserpassword.SetUserPasswordPlugin"
+            $pluginSequence = "$listenerPlugin,$certificateAuthPlugin"
+            $config = Get-Content $configFile -Raw
+            if (-not $config.Contains($pluginSequence)) {
+                throw "The NoCloud fixture plugin list has changed unexpectedly."
+            }
+            $config = $config.Replace($pluginSequence, $listenerPlugin)
+            $config = $config.Replace(",${setPasswordPlugin}", "")
+            Set-Content $configFile -Value $config -NoNewline
+
+            $networkInterfaces = @(
+                "auto eth0",
+                "iface eth0 inet static",
+                "    hwaddress ether REPLACE_MAC_ADDRESS",
+                "    address 10.196.59.2",
+                "    netmask 255.255.255.0",
+                "    gateway 10.196.59.1",
+                "    dns-nameservers 1.1.1.1 2606:4700:4700::1111",
+                "iface eth0 inet6 static",
+                "    address 2001:db8::10",
+                "    netmask 64",
+                "    gateway 2001:db8::1"
+            ) -join "`n"
+            $metadataFile = "test-resources/nocloud/cloudbase-init-metadata/meta-data"
+            $metadata = Get-Content $metadataFile -Raw | ConvertFrom-Json
+            $metadata | Add-Member -NotePropertyName "network-interfaces" `
+                -NotePropertyValue $networkInterfaces -Force
+            $metadata | ConvertTo-Json -Depth 20 -Compress |
+                Set-Content $metadataFile -Encoding Ascii -NoNewline
+
+            $networkTemplate = '"cloudbase-init-metadata\network-config.template"'
+            $networkOutput = '"cloudbase-init-metadata\network-config"'
+            $metadataTarget = '"cloudbase-init-metadata\meta-data"'
+            if (-not $functionalTests.Contains($networkTemplate) -or
+                -not $functionalTests.Contains($networkOutput)) {
+                throw "The upstream NoCloud preparation helper has changed unexpectedly."
+            }
+            $functionalTests = $functionalTests.Replace(
+                $networkTemplate, $metadataTarget).Replace(
+                $networkOutput, $metadataTarget)
+
+            $networkAfterPattern = '(?ms)^function after\.cloudbaseinit\.plugins\.common\.networkconfig\.NetworkConfigPlugin \{\r?\n.*?^\}\r?\n'
+            $networkAfterRegex = [regex]::new($networkAfterPattern)
+            if (-not $networkAfterRegex.IsMatch($functionalTests)) {
+                throw "The upstream network postcondition has changed unexpectedly."
+            }
+            $networkAfterReplacement = @(
+                'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
+                '    It "the Proxmox adapter should have both static address families" {'
+                '        $metadata = Get-Content -Raw -Path "$here/../nocloud/cloudbase-init-metadata/meta-data" | ConvertFrom-Json'
+                '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
+                '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
+                '        $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()'
+                '        $adapter = Get-NetAdapter | Where-Object {'
+                '            $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac'
+                '        } | Select-Object -First 1'
+                '        if (-not $adapter) { throw "The Proxmox target adapter was not found by MAC" }'
+                '        $configuredAddresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -ErrorAction Stop | Select-Object -ExpandProperty IPAddress)'
+                '        foreach ($expectedAddress in @("10.196.59.2", "2001:db8::10")) {'
+                '            if ($expectedAddress -notin $configuredAddresses) {'
+                '                throw "Missing Proxmox address $expectedAddress on adapter $($adapter.Name)"'
+                '            }'
+                '        }'
+                '    }'
+                '}'
+                ''
+            ) -join "`r`n"
+            $functionalTests = $networkAfterRegex.Replace(
+                $functionalTests, $networkAfterReplacement, 1)
+        }
+
+        Set-Content $functionalTestsFile -Value $functionalTests -NoNewline
     - name: Install Cloudbase-Init
       shell: cmd
       run: |
         python -W ignore -m pip install -c %UPPER_CONSTRAINTS% -U --force-reinstall -r requirements.txt
         python -W ignore -m pip install .
     - name: Run Cloudbase-Init functional tests
-      shell: powershell
+      shell: pwsh
       run: |
-        Install-Module -Force -AllowClobber -Confirm:$false "Pester"
+        $ErrorActionPreference = "Stop"
+        $pester = Get-Module -ListAvailable -Name Pester |
+            Where-Object { $_.Version -ge [version]"5.0.0" } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+        if (-not $pester) {
+            Install-Module -Name Pester -MinimumVersion 5.0.0 `
+                -Scope CurrentUser -Force -AllowClobber -Confirm:$false
+        }
+        Import-Module Pester -MinimumVersion 5.0.0 -Force
         $ENV:CLOUD = "${{ matrix.cloud }}"
         $ENV:TEST_ARCHITECTURE = "${{ matrix.architecture }}"
-        Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyBeforeAllPlugins
-        try {
-            & cmd /c "cloudbase-init.exe --noreset_service_password --config-file ./test-resources/${{ matrix.cloud }}/cloudbase-init.conf 2>&1" | Tee-Object -FilePath cloudbase-init.log
-        } catch {}
-        $errors = $(cat ./cloudbase-init.log | Where-Object {$_ -like "*error*"})
-        $pluginExecution = $(cat ./cloudbase-init.log | Where-Object {$_ -like "*Plugins execution done*"})
-        if ($errors -or !$pluginExecution) {
-            exit 1
+
+        $beforeResult = Invoke-Pester test-resources/functional-tests `
+            -Output Detailed -FullNameFilter TestVerifyBeforeAllPlugins `
+            -PassThru
+        if ($beforeResult.Result -ne "Passed") {
+            throw "Pester pre-execution assertions failed: $($beforeResult.Result)"
         }
-        Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins
+
+        & cloudbase-init.exe --noreset_service_password `
+            --config-file "./test-resources/${{ matrix.cloud }}/cloudbase-init.conf" `
+            2>&1 | Tee-Object -FilePath cloudbase-init.log
+        if ($LASTEXITCODE -ne 0) {
+            throw "Cloudbase-Init exited with code $LASTEXITCODE."
+        }
+        $errors = Get-Content ./cloudbase-init.log |
+            Where-Object { $_ -match "(?i)error" }
+        $pluginExecution = Get-Content ./cloudbase-init.log |
+            Where-Object { $_ -like "*Plugins execution done*" }
+        if ($errors -or -not $pluginExecution) {
+            throw "Cloudbase-Init functional execution did not complete cleanly."
+        }
+
+        $afterResult = Invoke-Pester test-resources/functional-tests `
+            -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins `
+            -PassThru
+        if ($afterResult.Result -ne "Passed") {
+            throw "Pester functional assertions failed: $($afterResult.Result)"
+        }
+
+        if ($ENV:CLOUD -eq "nocloud") {
+            $metadata = Get-Content `
+                "test-resources/nocloud/cloudbase-init-metadata/meta-data" `
+                -Raw | ConvertFrom-Json
+            $macMatch = [regex]::Match(
+                $metadata."network-interfaces",
+                "(?im)^\s*hwaddress\s+ether\s+(\S+)")
+            if (-not $macMatch.Success) {
+                throw "No Proxmox hwaddress was found in meta-data."
+            }
+            $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()
+            $adapter = Get-NetAdapter | Where-Object {
+                $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac
+            } | Select-Object -First 1
+            if (-not $adapter) {
+                throw "The Proxmox target adapter was not found by MAC."
+            }
+            $expectedAddresses = @("10.196.59.2", "2001:db8::10")
+            $configuredAddresses = Get-NetIPAddress `
+                -InterfaceIndex $adapter.ifIndex -ErrorAction Stop |
+                Select-Object -ExpandProperty IPAddress
+            $missingAddresses = $expectedAddresses |
+                Where-Object { $_ -notin $configuredAddresses }
+            if ($missingAddresses) {
+                throw "Proxmox dual-stack configuration is missing: $($missingAddresses -join ', ')"
+            }
+            Write-Host "Verified Proxmox dual-stack addresses on $($adapter.Name): $($expectedAddresses -join ', ')"
+        }
+    - name: Upload functional test log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: cloudbase-init-${{ matrix.cloud }}-${{ matrix.architecture }}
+        path: cloudbase-init.log
+        if-no-files-found: warn
+  windows-dependency-audit:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout cloudbase-init repository
+      uses: actions/checkout@v4
+    - name: Set up Python 3.14
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.14"
+        architecture: "x64"
     - name: Audit Cloudbase-Init pip packages
-      shell: powershell
+      shell: pwsh
       run: |
-        python -W ignore -m pip install pip-audit
-        pip-audit.exe
-        if ($LASTEXITCODE) {
-            exit 1
-        }
+        $ErrorActionPreference = "Stop"
+        python -W ignore -m pip install --upgrade pip pip-audit
+        python -W ignore -m pip install `
+            -c $ENV:UPPER_CONSTRAINTS -r requirements.txt
+        python -m pip_audit
