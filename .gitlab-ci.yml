@@ -69,9 +69,11 @@ default:
                   (Get-Item $hostLockPath).LastWriteTimeUtc
               $hostLockOwnerIsValid = $false
               $hostLockOwnerProcessIsActive = $false
+              $hostLockOwnerContent = Get-Content $hostLockOwnerPath -Raw `
+                  -ErrorAction SilentlyContinue
               try {
-                  $hostLockOwner = Get-Content $hostLockOwnerPath -Raw `
-                      -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                  $hostLockOwner = $hostLockOwnerContent |
+                      ConvertFrom-Json -ErrorAction Stop
                   $hostLockOwnerIsValid =
                       $null -ne $hostLockOwner.process_id -and
                       $null -ne $hostLockOwner.process_start_time_utc_ticks
@@ -98,9 +100,40 @@ default:
                   (-not $hostLockOwnerIsValid -and
                       $hostLockAge.TotalSeconds -ge 30)
               if ($hostLockIsOrphaned) {
-                  Write-Warning "Removing orphaned host CI job lock"
-                  Remove-Item $hostLockPath -Recurse -Force `
-                      -ErrorAction SilentlyContinue
+                  $hostLockCleanupMutex = [System.Threading.Mutex]::new(
+                      $false, "Global\XylentisCloudbaseInitHostLockCleanup")
+                  $hasHostLockCleanupMutex = $false
+                  try {
+                      try {
+                          $hasHostLockCleanupMutex =
+                              $hostLockCleanupMutex.WaitOne(
+                                  [TimeSpan]::FromSeconds(30))
+                      }
+                      catch [System.Threading.AbandonedMutexException] {
+                          $hasHostLockCleanupMutex = $true
+                      }
+                      if (-not $hasHostLockCleanupMutex) {
+                          throw "Timed out waiting for the host lock cleanup mutex."
+                      }
+
+                      # Recheck the lock generation while cleanup is serialized.
+                      # Another waiter may have already replaced the stale lock.
+                      $currentHostLockOwnerContent = Get-Content `
+                          $hostLockOwnerPath -Raw -ErrorAction SilentlyContinue
+                      if ($currentHostLockOwnerContent -eq
+                          $hostLockOwnerContent) {
+                          Write-Warning `
+                              "Removing orphaned host CI job lock"
+                          Remove-Item $hostLockPath -Recurse -Force `
+                              -ErrorAction SilentlyContinue
+                      }
+                  }
+                  finally {
+                      if ($hasHostLockCleanupMutex) {
+                          $hostLockCleanupMutex.ReleaseMutex()
+                      }
+                      $hostLockCleanupMutex.Dispose()
+                  }
                   continue
               }
               if ($hostLockWait.Elapsed.TotalMinutes -ge 60) {
