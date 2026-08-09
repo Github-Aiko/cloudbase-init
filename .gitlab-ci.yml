@@ -75,19 +75,13 @@ default:
                   $hostLockOwner = $hostLockOwnerContent |
                       ConvertFrom-Json -ErrorAction Stop
                   $hostLockOwnerIsValid =
-                      $null -ne $hostLockOwner.process_id -and
-                      $null -ne $hostLockOwner.process_start_time_utc_ticks
+                      $null -ne $hostLockOwner.process_id
                   if ($hostLockOwnerIsValid) {
                       $hostLockOwnerProcess = Get-Process `
                           -Id ([int]$hostLockOwner.process_id) `
                           -ErrorAction SilentlyContinue
-                      if ($hostLockOwnerProcess) {
-                          $hostLockOwnerProcessStartTicks =
-                              $hostLockOwnerProcess.StartTime.ToUniversalTime().Ticks
-                          $hostLockOwnerProcessIsActive =
-                              $hostLockOwnerProcessStartTicks -eq
-                              [long]$hostLockOwner.process_start_time_utc_ticks
-                      }
+                      $hostLockOwnerProcessIsActive =
+                          $null -ne $hostLockOwnerProcess
                   }
               }
               catch {
