@@ -13,6 +13,7 @@
 .nova-venv
 .project
 .pydevproject
+.python-3.14
 .ropeproject
 .tox
 .venv
