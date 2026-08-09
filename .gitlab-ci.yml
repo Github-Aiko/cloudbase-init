@@ -159,7 +159,7 @@ windows-unit-tests:
   stage: test
   script:
     - Invoke-Python -m pip install --upgrade pip setuptools tox
-    - Invoke-Python -m tox -e py314,pep8
+    - Invoke-Python -m tox -e "py314,pep8"
 
 windows-functional-tests:
   stage: test
