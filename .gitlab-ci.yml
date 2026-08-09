@@ -50,8 +50,15 @@ default:
           try {
               New-Item $hostLockPath -ItemType Directory -ErrorAction Stop |
                   Out-Null
-              Set-Content $hostLockOwnerPath -Value $env:CI_JOB_ID `
-                  -Encoding Ascii -NoNewline
+              $hostLockProcess = Get-Process -Id $PID
+              $hostLockOwner = [pscustomobject]@{
+                  job_id = "$env:CI_JOB_ID"
+                  process_id = $PID
+                  process_start_time_utc_ticks =
+                      $hostLockProcess.StartTime.ToUniversalTime().Ticks
+              }
+              $hostLockOwner | ConvertTo-Json -Compress |
+                  Set-Content $hostLockOwnerPath -Encoding Ascii -NoNewline
               $hostLockAcquired = $true
           }
           catch {
@@ -60,14 +67,44 @@ default:
               }
               $hostLockAge = (Get-Date).ToUniversalTime() -
                   (Get-Item $hostLockPath).LastWriteTimeUtc
-              if ($hostLockAge.TotalHours -ge 4) {
-                  Write-Warning "Removing stale host CI job lock"
+              $hostLockOwnerIsValid = $false
+              $hostLockOwnerProcessIsActive = $false
+              try {
+                  $hostLockOwner = Get-Content $hostLockOwnerPath -Raw `
+                      -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                  $hostLockOwnerIsValid =
+                      $null -ne $hostLockOwner.process_id -and
+                      $null -ne $hostLockOwner.process_start_time_utc_ticks
+                  if ($hostLockOwnerIsValid) {
+                      $hostLockOwnerProcess = Get-Process `
+                          -Id ([int]$hostLockOwner.process_id) `
+                          -ErrorAction SilentlyContinue
+                      if ($hostLockOwnerProcess) {
+                          $hostLockOwnerProcessStartTicks =
+                              $hostLockOwnerProcess.StartTime.ToUniversalTime().Ticks
+                          $hostLockOwnerProcessIsActive =
+                              $hostLockOwnerProcessStartTicks -eq
+                              [long]$hostLockOwner.process_start_time_utc_ticks
+                      }
+                  }
+              }
+              catch {
+                  # Legacy lock owner files contain only a CI job ID.
+              }
+
+              $hostLockIsOrphaned =
+                  ($hostLockOwnerIsValid -and
+                      -not $hostLockOwnerProcessIsActive) -or
+                  (-not $hostLockOwnerIsValid -and
+                      $hostLockAge.TotalSeconds -ge 30)
+              if ($hostLockIsOrphaned) {
+                  Write-Warning "Removing orphaned host CI job lock"
                   Remove-Item $hostLockPath -Recurse -Force `
                       -ErrorAction SilentlyContinue
                   continue
               }
               if ($hostLockWait.Elapsed.TotalMinutes -ge 60) {
-                  throw "Timed out waiting for the host CI job lock. Set limit = 1 for each cloned Windows runner."
+                  throw "Timed out waiting for the host CI job lock. Verify the owner process and runner concurrency."
               }
               Start-Sleep -Seconds 2
           }
@@ -280,9 +317,17 @@ default:
       $hostLockPath = Join-Path $env:ProgramData `
           "Xylentis\cloudbase-init-ci.lockdir"
       $hostLockOwnerPath = Join-Path $hostLockPath "owner"
-      $hostLockOwner = Get-Content $hostLockOwnerPath `
+      $hostLockOwnerContent = Get-Content $hostLockOwnerPath -Raw `
           -ErrorAction SilentlyContinue
-      if ($hostLockOwner -eq "$env:CI_JOB_ID") {
+      $hostLockOwnerJobId = $hostLockOwnerContent
+      try {
+          $hostLockOwnerJobId = ($hostLockOwnerContent |
+              ConvertFrom-Json -ErrorAction Stop).job_id
+      }
+      catch {
+          # Support locks created by older pipeline versions.
+      }
+      if ("$hostLockOwnerJobId" -eq "$env:CI_JOB_ID") {
           Remove-Item $hostLockPath -Recurse -Force `
               -ErrorAction SilentlyContinue
           Write-Host "Released host CI job lock"
@@ -572,9 +617,17 @@ windows-functional-tests:
       $hostLockPath = Join-Path $env:ProgramData `
           "Xylentis\cloudbase-init-ci.lockdir"
       $hostLockOwnerPath = Join-Path $hostLockPath "owner"
-      $hostLockOwner = Get-Content $hostLockOwnerPath `
+      $hostLockOwnerContent = Get-Content $hostLockOwnerPath -Raw `
           -ErrorAction SilentlyContinue
-      if ($hostLockOwner -eq "$env:CI_JOB_ID") {
+      $hostLockOwnerJobId = $hostLockOwnerContent
+      try {
+          $hostLockOwnerJobId = ($hostLockOwnerContent |
+              ConvertFrom-Json -ErrorAction Stop).job_id
+      }
+      catch {
+          # Support locks created by older pipeline versions.
+      }
+      if ("$hostLockOwnerJobId" -eq "$env:CI_JOB_ID") {
           Remove-Item $hostLockPath -Recurse -Force `
               -ErrorAction SilentlyContinue
           Write-Host "Released host CI job lock"
