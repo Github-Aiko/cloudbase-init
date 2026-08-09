@@ -223,30 +223,12 @@ default:
       $knownPythonPaths = @(
           "C:\Python314\python.exe",
           "$env:ProgramFiles\Python314\python.exe",
-          "$env:ProgramFiles\Python\Python314\python.exe",
-          "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
-          "$env:CI_PROJECT_DIR\.python-3.14\python.exe"
+          "$env:ProgramFiles\Python\Python314\python.exe"
       )
       foreach ($pythonPath in $knownPythonPaths) {
           if (Test-Python314 $pythonPath) {
               $script:PythonExecutable = $pythonPath
               break
-          }
-      }
-
-      if (-not $script:PythonExecutable) {
-          $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
-          if ($launcher -and
-              (Test-Python314 $launcher.Source @("-3.14"))) {
-              $script:PythonExecutable = $launcher.Source
-              $script:PythonPrefixArguments = @("-3.14")
-          }
-      }
-
-      if (-not $script:PythonExecutable) {
-          $python = Get-Command python.exe -ErrorAction SilentlyContinue
-          if ($python -and (Test-Python314 $python.Source)) {
-              $script:PythonExecutable = $python.Source
           }
       }
 
