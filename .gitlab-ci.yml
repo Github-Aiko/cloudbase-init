@@ -42,18 +42,30 @@ default:
       $ErrorActionPreference = "Stop"
       $hostLockDirectory = Join-Path $env:ProgramData "Xylentis"
       New-Item $hostLockDirectory -ItemType Directory -Force | Out-Null
-      $hostLockPath = Join-Path $hostLockDirectory "cloudbase-init-ci.lock"
+      $hostLockPath = Join-Path $hostLockDirectory "cloudbase-init-ci.lockdir"
+      $hostLockOwnerPath = Join-Path $hostLockPath "owner"
       $hostLockWait = [System.Diagnostics.Stopwatch]::StartNew()
-      $global:XylentisHostJobLock = $null
-      while (-not $global:XylentisHostJobLock) {
+      $hostLockAcquired = $false
+      while (-not $hostLockAcquired) {
           try {
-              $global:XylentisHostJobLock = [System.IO.File]::Open(
-                  $hostLockPath,
-                  [System.IO.FileMode]::OpenOrCreate,
-                  [System.IO.FileAccess]::ReadWrite,
-                  [System.IO.FileShare]::None)
+              New-Item $hostLockPath -ItemType Directory -ErrorAction Stop |
+                  Out-Null
+              Set-Content $hostLockOwnerPath -Value $env:CI_JOB_ID `
+                  -Encoding Ascii -NoNewline
+              $hostLockAcquired = $true
           }
-          catch [System.IO.IOException] {
+          catch {
+              if (-not (Test-Path $hostLockPath -PathType Container)) {
+                  throw
+              }
+              $hostLockAge = (Get-Date).ToUniversalTime() -
+                  (Get-Item $hostLockPath).LastWriteTimeUtc
+              if ($hostLockAge.TotalHours -ge 4) {
+                  Write-Warning "Removing stale host CI job lock"
+                  Remove-Item $hostLockPath -Recurse -Force `
+                      -ErrorAction SilentlyContinue
+                  continue
+              }
               if ($hostLockWait.Elapsed.TotalMinutes -ge 60) {
                   throw "Timed out waiting for the host CI job lock. Set limit = 1 for each cloned Windows runner."
               }
@@ -61,10 +73,10 @@ default:
           }
       }
       Write-Host "Acquired host CI job lock: $hostLockPath"
-      # Keep this global file handle open until the job PowerShell process
-      # exits. It prevents concurrent jobs on one VM from sharing Python,
-      # registry state and the functional TAP adapter, while separate cloned
-      # VMs remain fully parallel through the common `windows` tag.
+      # The lock directory persists across runner-created PowerShell scopes.
+      # It prevents concurrent jobs on one VM from sharing Python, registry
+      # state and the functional TAP adapter, while separate cloned VMs remain
+      # fully parallel through the common `windows` tag.
 
       function Initialize-MsvcEnvironment {
           if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
@@ -263,6 +275,18 @@ default:
           throw "Unable to discover the Python scripts directory."
       }
       $env:PATH = "$($pythonScripts | Select-Object -Last 1);$env:PATH"
+  after_script:
+    - |
+      $hostLockPath = Join-Path $env:ProgramData `
+          "Xylentis\cloudbase-init-ci.lockdir"
+      $hostLockOwnerPath = Join-Path $hostLockPath "owner"
+      $hostLockOwner = Get-Content $hostLockOwnerPath `
+          -ErrorAction SilentlyContinue
+      if ($hostLockOwner -eq "$env:CI_JOB_ID") {
+          Remove-Item $hostLockPath -Recurse -Force `
+              -ErrorAction SilentlyContinue
+          Write-Host "Released host CI job lock"
+      }
 
 windows-unit-tests:
   stage: test
@@ -543,6 +567,17 @@ windows-functional-tests:
           Dismount-DiskImage -ImagePath $configDrive `
               -ErrorAction SilentlyContinue
           Remove-Item $configDrive -Force -ErrorAction SilentlyContinue
+      }
+    - |
+      $hostLockPath = Join-Path $env:ProgramData `
+          "Xylentis\cloudbase-init-ci.lockdir"
+      $hostLockOwnerPath = Join-Path $hostLockPath "owner"
+      $hostLockOwner = Get-Content $hostLockOwnerPath `
+          -ErrorAction SilentlyContinue
+      if ($hostLockOwner -eq "$env:CI_JOB_ID") {
+          Remove-Item $hostLockPath -Recurse -Force `
+              -ErrorAction SilentlyContinue
+          Write-Host "Released host CI job lock"
       }
   artifacts:
     when: always
