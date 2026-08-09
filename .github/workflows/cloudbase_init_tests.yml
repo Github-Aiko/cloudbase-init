@@ -154,8 +154,6 @@ jobs:
                 -NotePropertyValue $networkInterfaces -Force
             $metadata | ConvertTo-Json -Depth 20 -Compress |
                 Set-Content $metadataFile -Encoding Ascii -NoNewline
-            $metadataFixturePath = (Resolve-Path -LiteralPath $metadataFile).Path.Replace("'", "''")
-
             $networkTemplate = '"cloudbase-init-metadata\network-config.template"'
             $networkOutput = '"cloudbase-init-metadata\network-config"'
             $metadataTarget = '"cloudbase-init-metadata\meta-data"'
@@ -174,23 +172,7 @@ jobs:
             }
             $networkAfterReplacement = @(
                 'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
-                '    It "the Proxmox adapter should have both static address families" {'
-                "        `$metadataPath = '$metadataFixturePath'"
-                '        $metadata = Get-Content -Raw -Path $metadataPath | ConvertFrom-Json'
-                '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
-                '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
-                '        $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()'
-                '        $adapter = Get-NetAdapter | Where-Object {'
-                '            $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac'
-                '        } | Select-Object -First 1'
-                '        if (-not $adapter) { throw "The Proxmox target adapter was not found by MAC" }'
-                '        $configuredAddresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -ErrorAction Stop | Select-Object -ExpandProperty IPAddress)'
-                '        foreach ($expectedAddress in @("10.196.59.2", "2001:db8::10")) {'
-                '            if ($expectedAddress -notin $configuredAddresses) {'
-                '                throw "Missing Proxmox address $expectedAddress on adapter $($adapter.Name)"'
-                '            }'
-                '        }'
-                '    }'
+                '    # Verified after Pester by MAC and both address families.'
                 '}'
                 ''
             ) -join "`r`n"
@@ -260,6 +242,7 @@ jobs:
             }
             $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()
             $adapter = Get-NetAdapter | Where-Object {
+                $_.MacAddress -and
                 $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac
             } | Select-Object -First 1
             if (-not $adapter) {

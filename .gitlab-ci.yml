@@ -40,6 +40,23 @@ default:
   before_script:
     - |
       $ErrorActionPreference = "Stop"
+      $script:HostJobMutex = [System.Threading.Mutex]::new(
+          $false, "Global\XylentisCloudbaseInitCIJob")
+      try {
+          $hostJobMutexAcquired = $script:HostJobMutex.WaitOne(
+              [TimeSpan]::FromMinutes(30))
+      }
+      catch [System.Threading.AbandonedMutexException] {
+          $hostJobMutexAcquired = $true
+      }
+      if (-not $hostJobMutexAcquired) {
+          throw "Timed out waiting for the host CI job lock. Set limit = 1 for each cloned Windows runner."
+      }
+      # Keep this mutex alive until the job PowerShell process exits. It
+      # prevents concurrent jobs on one VM from sharing Python, registry state
+      # and the functional TAP adapter, while separate cloned VMs remain
+      # fully parallel through the common `windows` tag.
+
       function Initialize-MsvcEnvironment {
           if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
               return
@@ -110,7 +127,7 @@ default:
 
           & $Executable ($PrefixArguments + @(
               "-c",
-              "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 14) else 1)"
+              "import pathlib, sys, sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 14) and (pathlib.Path(sysconfig.get_path('include')) / 'Python.h').is_file() else 1)"
           )) 2>$null
           return $LASTEXITCODE -eq 0
       }
@@ -148,45 +165,78 @@ default:
       }
 
       if (-not $script:PythonExecutable) {
-          $pythonManager = "C:\Program Files\PyManager\pymanager.exe"
-          $pythonTarget = "$env:CI_PROJECT_DIR\.python-3.14"
-          if (-not (Test-Path $pythonManager -PathType Leaf)) {
-              $choco = Get-Command choco.exe -ErrorAction SilentlyContinue
-              if (-not $choco) {
-                  throw "Python 3.14 and Chocolatey are unavailable. Install Chocolatey or Python 3.14 on this runner."
+          $pythonInstallMutex = [System.Threading.Mutex]::new(
+              $false, "Global\XylentisCloudbaseInitPython314")
+          $hasPythonInstallMutex = $false
+          try {
+              try {
+                  $hasPythonInstallMutex = $pythonInstallMutex.WaitOne(
+                      [TimeSpan]::FromMinutes(15))
+              }
+              catch [System.Threading.AbandonedMutexException] {
+                  $hasPythonInstallMutex = $true
+              }
+              if (-not $hasPythonInstallMutex) {
+                  throw "Timed out waiting for the Python 3.14 installer lock."
               }
 
-              Write-Host "Python 3.14 not found; installing python314 with Chocolatey"
-              & $choco.Source install python314 -y --no-progress `
-                  --params "/InstallDir:C:\Python314"
-              $chocoExitCode = $LASTEXITCODE
-              if ($chocoExitCode -notin @(0, 1605, 1614, 1641, 3010)) {
-                  throw "Chocolatey failed to install python314 (exit code $chocoExitCode)."
+              # Another concurrent job may have completed the installation
+              # while this job waited for the host-wide lock.
+              if (Test-Python314 "C:\Python314\python.exe") {
+                  $script:PythonExecutable = "C:\Python314\python.exe"
               }
 
-              $machinePath = [Environment]::GetEnvironmentVariable(
-                  "Path", "Machine")
-              $env:PATH = "$machinePath;$env:PATH"
-              $chocoPython = "C:\Python314\python.exe"
-              if (-not (Test-Python314 $chocoPython)) {
-                  $chocoPythonCommand = Get-Command python.exe `
-                      -ErrorAction SilentlyContinue
-                  if ($chocoPythonCommand -and
-                      (Test-Python314 $chocoPythonCommand.Source)) {
-                      $chocoPython = $chocoPythonCommand.Source
+              if (-not $script:PythonExecutable) {
+                  $choco = Get-Command choco.exe -ErrorAction SilentlyContinue
+                  if (-not $choco) {
+                      throw "A Python 3.14 installation with developer headers and Chocolatey are unavailable."
                   }
-                  else {
-                      throw "Chocolatey completed, but Python 3.14 could not be discovered."
+
+                  Write-Host "Installing Python 3.14 developer headers with Chocolatey"
+                  & $choco.Source upgrade python314 -y --force --no-progress `
+                      --params "/InstallDir:C:\Python314"
+                  $chocoExitCode = $LASTEXITCODE
+                  if ($chocoExitCode -notin @(0, 1605, 1614, 1641, 3010)) {
+                      throw "Chocolatey failed to install python314 (exit code $chocoExitCode)."
+                  }
+
+                  $machinePath = [Environment]::GetEnvironmentVariable(
+                      "Path", "Machine")
+                  $env:PATH = "$machinePath;$env:PATH"
+                  $installedPythonPaths = @(
+                      "C:\Python314\python.exe",
+                      "$env:ProgramFiles\Python314\python.exe",
+                      "$env:ProgramFiles\Python\Python314\python.exe"
+                  )
+                  foreach ($registryPath in @(
+                      "HKLM:\SOFTWARE\Python\PythonCore\3.14\InstallPath",
+                      "HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore\3.14\InstallPath"
+                  )) {
+                      if (Test-Path $registryPath) {
+                          $installRoot = (Get-Item $registryPath).GetValue("")
+                          if ($installRoot) {
+                              $installedPythonPaths += Join-Path $installRoot "python.exe"
+                          }
+                      }
+                  }
+
+                  foreach ($pythonPath in $installedPythonPaths | Select-Object -Unique) {
+                      if (Test-Python314 $pythonPath) {
+                          $script:PythonExecutable = $pythonPath
+                          break
+                      }
                   }
               }
-              $script:PythonExecutable = $chocoPython
           }
-          else {
-              & $pythonManager install --target=$pythonTarget --force --update 3.14
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Python Install Manager failed with exit code $LASTEXITCODE."
+          finally {
+              if ($hasPythonInstallMutex) {
+                  $pythonInstallMutex.ReleaseMutex()
               }
-              $script:PythonExecutable = "$pythonTarget\python.exe"
+              $pythonInstallMutex.Dispose()
+          }
+
+          if (-not $script:PythonExecutable) {
+              throw "Chocolatey completed, but Python 3.14 developer headers could not be discovered."
           }
       }
 
@@ -361,8 +411,6 @@ windows-functional-tests:
               -NotePropertyValue $networkInterfaces -Force
           $metadata | ConvertTo-Json -Depth 20 -Compress |
               Set-Content $metadataFile -Encoding Ascii -NoNewline
-          $metadataFixturePath = (Resolve-Path -LiteralPath $metadataFile).Path.Replace("'", "''")
-
           # Reuse the upstream helper that substitutes the TAP adapter MAC and
           # builds the CIDATA ISO, but point it at the Proxmox meta-data file.
           $functionalTestsFile = "test-resources/functional-tests/CloudbaseInit.Tests.ps1"
@@ -388,23 +436,7 @@ windows-functional-tests:
           }
           $networkAfterReplacement = @(
               'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
-              '    It "the Proxmox adapter should have both static address families" {'
-              "        `$metadataPath = '$metadataFixturePath'"
-              '        $metadata = Get-Content -Raw -Path $metadataPath | ConvertFrom-Json'
-              '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
-              '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
-              '        $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()'
-              '        $adapter = Get-NetAdapter | Where-Object {'
-              '            $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac'
-              '        } | Select-Object -First 1'
-              '        if (-not $adapter) { throw "The Proxmox target adapter was not found by MAC" }'
-              '        $configuredAddresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -ErrorAction Stop | Select-Object -ExpandProperty IPAddress)'
-              '        foreach ($expectedAddress in @("10.196.59.2", "2001:db8::10")) {'
-              '            if ($expectedAddress -notin $configuredAddresses) {'
-              '                throw "Missing Proxmox address $expectedAddress on adapter $($adapter.Name)"'
-              '            }'
-              '        }'
-              '    }'
+              '    # Verified after Pester by MAC and both address families.'
               '}'
               ''
           ) -join "`r`n"
@@ -478,6 +510,7 @@ windows-functional-tests:
           }
           $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()
           $adapter = Get-NetAdapter | Where-Object {
+              $_.MacAddress -and
               $_.MacAddress.Replace(":", "").Replace("-", "").ToUpperInvariant() -eq $expectedMac
           } | Select-Object -First 1
           if (-not $adapter) {
