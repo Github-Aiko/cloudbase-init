@@ -40,22 +40,31 @@ default:
   before_script:
     - |
       $ErrorActionPreference = "Stop"
-      $script:HostJobMutex = [System.Threading.Mutex]::new(
-          $false, "Global\XylentisCloudbaseInitCIJob")
-      try {
-          $hostJobMutexAcquired = $script:HostJobMutex.WaitOne(
-              [TimeSpan]::FromMinutes(30))
+      $hostLockDirectory = Join-Path $env:ProgramData "Xylentis"
+      New-Item $hostLockDirectory -ItemType Directory -Force | Out-Null
+      $hostLockPath = Join-Path $hostLockDirectory "cloudbase-init-ci.lock"
+      $hostLockWait = [System.Diagnostics.Stopwatch]::StartNew()
+      $global:XylentisHostJobLock = $null
+      while (-not $global:XylentisHostJobLock) {
+          try {
+              $global:XylentisHostJobLock = [System.IO.File]::Open(
+                  $hostLockPath,
+                  [System.IO.FileMode]::OpenOrCreate,
+                  [System.IO.FileAccess]::ReadWrite,
+                  [System.IO.FileShare]::None)
+          }
+          catch [System.IO.IOException] {
+              if ($hostLockWait.Elapsed.TotalMinutes -ge 60) {
+                  throw "Timed out waiting for the host CI job lock. Set limit = 1 for each cloned Windows runner."
+              }
+              Start-Sleep -Seconds 2
+          }
       }
-      catch [System.Threading.AbandonedMutexException] {
-          $hostJobMutexAcquired = $true
-      }
-      if (-not $hostJobMutexAcquired) {
-          throw "Timed out waiting for the host CI job lock. Set limit = 1 for each cloned Windows runner."
-      }
-      # Keep this mutex alive until the job PowerShell process exits. It
-      # prevents concurrent jobs on one VM from sharing Python, registry state
-      # and the functional TAP adapter, while separate cloned VMs remain
-      # fully parallel through the common `windows` tag.
+      Write-Host "Acquired host CI job lock: $hostLockPath"
+      # Keep this global file handle open until the job PowerShell process
+      # exits. It prevents concurrent jobs on one VM from sharing Python,
+      # registry state and the functional TAP adapter, while separate cloned
+      # VMs remain fully parallel through the common `windows` tag.
 
       function Initialize-MsvcEnvironment {
           if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
