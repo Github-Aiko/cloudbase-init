@@ -17,7 +17,7 @@ variables:
 default:
   tags:
     - windows
-    - windows-runner-17
+    - windows-shell
   hooks:
     pre_get_sources_script:
       - |
@@ -209,6 +209,45 @@ windows-functional-tests:
               $listenerPlugin)
           $config = $config.Replace(",${setPasswordPlugin}", "")
           Set-Content $configFile -Value $config -NoNewline
+
+          # Exercise the Proxmox path end-to-end. Proxmox embeds Debian
+          # interfaces syntax in meta-data instead of providing NoCloud's
+          # separate network-config file.
+          $networkInterfaces = @(
+              "auto eth0",
+              "iface eth0 inet static",
+              "    hwaddress ether REPLACE_MAC_ADDRESS",
+              "    address 10.196.59.2",
+              "    netmask 255.255.255.0",
+              "    gateway 10.196.59.1",
+              "    dns-nameservers 1.1.1.1 2606:4700:4700::1111",
+              "iface eth0 inet6 static",
+              "    address 2001:db8::10",
+              "    netmask 64",
+              "    gateway 2001:db8::1"
+          ) -join "`n"
+          $metadataFile = "test-resources/nocloud/cloudbase-init-metadata/meta-data"
+          $metadata = Get-Content $metadataFile -Raw | ConvertFrom-Json
+          $metadata | Add-Member -NotePropertyName "network-interfaces" `
+              -NotePropertyValue $networkInterfaces -Force
+          $metadata | ConvertTo-Json -Depth 20 -Compress |
+              Set-Content $metadataFile -Encoding Ascii -NoNewline
+
+          # Reuse the upstream helper that substitutes the TAP adapter MAC and
+          # builds the CIDATA ISO, but point it at the Proxmox meta-data file.
+          $functionalTestsFile = "test-resources/functional-tests/CloudbaseInit.Tests.ps1"
+          $functionalTests = Get-Content $functionalTestsFile -Raw
+          $networkTemplate = '"cloudbase-init-metadata\network-config.template"'
+          $networkOutput = '"cloudbase-init-metadata\network-config"'
+          $metadataTarget = '"cloudbase-init-metadata\meta-data"'
+          if (-not $functionalTests.Contains($networkTemplate) -or
+              -not $functionalTests.Contains($networkOutput)) {
+              throw "The upstream NoCloud preparation helper has changed unexpectedly."
+          }
+          $functionalTests = $functionalTests.Replace(
+              $networkTemplate, $metadataTarget).Replace(
+              $networkOutput, $metadataTarget)
+          Set-Content $functionalTestsFile -Value $functionalTests -NoNewline
       }
     - Invoke-Python -W ignore -m pip install --upgrade pip
     - Invoke-Python -W ignore -m pip install -c $env:UPPER_CONSTRAINTS --upgrade --force-reinstall -r requirements.txt
@@ -252,6 +291,19 @@ windows-functional-tests:
           -PassThru
       if ($pesterResult.FailedCount -gt 0) {
           throw "Pester functional assertions failed: $($pesterResult.FailedCount)"
+      }
+
+      if ($env:CLOUD_PROFILE -eq "nocloud") {
+          $expectedAddresses = @("10.196.59.2", "2001:db8::10")
+          $configuredAddresses = Get-NetIPAddress `
+              -InterfaceAlias "cbs_init_eth0" -ErrorAction Stop |
+              Select-Object -ExpandProperty IPAddress
+          $missingAddresses = $expectedAddresses |
+              Where-Object { $_ -notin $configuredAddresses }
+          if ($missingAddresses) {
+              throw "Proxmox dual-stack configuration is missing: $($missingAddresses -join ', ')"
+          }
+          Write-Host "Verified Proxmox dual-stack addresses: $($expectedAddresses -join ', ')"
       }
   after_script:
     - |
