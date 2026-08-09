@@ -17,7 +17,6 @@ variables:
 default:
   tags:
     - windows
-    - windows-shell
   hooks:
     pre_get_sources_script:
       - |
