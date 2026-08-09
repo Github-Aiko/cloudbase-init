@@ -1,0 +1,91 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+stages:
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR\\.cache\\pip"
+  PYTHONUTF8: "1"
+  TEST_RESOURCES: "https://github.com/cloudbase/cloudbase-init-test-resources.git"
+  TEST_RESOURCES_BRANCH: "master"
+  UPPER_CONSTRAINTS: "upper-constraints.txt"
+
+default:
+  tags:
+    - windows
+  cache:
+    key: "pip-$CI_JOB_NAME"
+    paths:
+      - .cache/pip/
+  before_script:
+    - |
+      $ErrorActionPreference = "Stop"
+      function Invoke-Python {
+          if (Get-Command py.exe -ErrorAction SilentlyContinue) {
+              & py.exe -3.14 @args
+          } elseif (Get-Command python.exe -ErrorAction SilentlyContinue) {
+              & python.exe @args
+          } else {
+              throw "Python 3.14 is not installed or is not available on PATH."
+          }
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python command failed with exit code $LASTEXITCODE."
+          }
+      }
+      Invoke-Python --version
+
+windows-unit-tests:
+  stage: test
+  script:
+    - Invoke-Python -m pip install --upgrade pip setuptools tox
+    - Invoke-Python -m tox -e py3,pep8
+
+windows-functional-tests:
+  stage: test
+  parallel:
+    matrix:
+      - CLOUD_PROFILE:
+          - empty
+          - nocloud
+          - vmwareguest
+          - oracle
+  script:
+    - git clone --depth 1 --branch $env:TEST_RESOURCES_BRANCH $env:TEST_RESOURCES test-resources
+    - Invoke-Python -W ignore -m pip install --upgrade pip
+    - Invoke-Python -W ignore -m pip install -c $env:UPPER_CONSTRAINTS --upgrade --force-reinstall -r requirements.txt
+    - Invoke-Python -W ignore -m pip install .
+    - |
+      if (-not (Get-Module -ListAvailable -Name Pester)) {
+          Install-Module -Force -AllowClobber -Confirm:$false Pester
+      }
+      $env:CLOUD = $env:CLOUD_PROFILE
+      $env:TEST_ARCHITECTURE = "x64"
+      Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyBeforeAllPlugins
+
+      $configFile = "./test-resources/$($env:CLOUD_PROFILE)/cloudbase-init.conf"
+      & cloudbase-init.exe --noreset_service_password --config-file $configFile 2>&1 |
+          Tee-Object -FilePath cloudbase-init.log
+
+      $errors = Get-Content ./cloudbase-init.log | Where-Object { $_ -match "(?i)error" }
+      $pluginExecution = Get-Content ./cloudbase-init.log | Where-Object { $_ -like "*Plugins execution done*" }
+      if ($errors -or -not $pluginExecution) {
+          throw "Cloudbase-Init functional execution did not complete cleanly."
+      }
+
+      Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - cloudbase-init.log
+
+windows-dependency-audit:
+  stage: test
+  script:
+    - Invoke-Python -m pip install --upgrade pip pip-audit
+    - Invoke-Python -m pip install -c $env:UPPER_CONSTRAINTS -r requirements.txt
+    - Invoke-Python -m pip_audit
