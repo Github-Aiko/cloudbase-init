@@ -174,7 +174,7 @@ jobs:
             $networkAfterReplacement = @(
                 'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
                 '    It "the Proxmox adapter should have both static address families" {'
-                '        $metadataPath = Join-Path $env:GITHUB_WORKSPACE "test-resources/nocloud/cloudbase-init-metadata/meta-data"'
+                '        $metadataPath = Join-Path $PSScriptRoot "..\nocloud\cloudbase-init-metadata\meta-data"'
                 '        $metadata = Get-Content -Raw -Path $metadataPath | ConvertFrom-Json'
                 '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
                 '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
