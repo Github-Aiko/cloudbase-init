@@ -198,6 +198,7 @@ windows-functional-tests:
           $configFile = "test-resources/nocloud/cloudbase-init.conf"
           $listenerPlugin = "cloudbaseinit.plugins.windows.winrmlistener.ConfigWinRMListenerPlugin"
           $certificateAuthPlugin = "cloudbaseinit.plugins.windows.winrmcertificateauth.ConfigWinRMCertificateAuthPlugin"
+          $setPasswordPlugin = "cloudbaseinit.plugins.common.setuserpassword.SetUserPasswordPlugin"
           $pluginSequence = "$listenerPlugin,$certificateAuthPlugin"
           $config = Get-Content $configFile -Raw
           if (-not $config.Contains($pluginSequence)) {
@@ -206,6 +207,7 @@ windows-functional-tests:
           $config = $config.Replace(
               $pluginSequence,
               $listenerPlugin)
+          $config = $config.Replace(",${setPasswordPlugin}", "")
           Set-Content $configFile -Value $config -NoNewline
       }
     - Invoke-Python -W ignore -m pip install --upgrade pip
@@ -224,6 +226,15 @@ windows-functional-tests:
       Write-Host "Using Pester $((Get-Module Pester).Version)"
       $env:CLOUD = $env:CLOUD_PROFILE
       $env:TEST_ARCHITECTURE = "x64"
+
+      # Self-hosted Shell runners retain Cloudbase-Init's registry state.
+      # Reset only this fixture instance so every profile executes its plugins
+      # instead of inheriting PLUGIN_EXECUTION_DONE from an earlier job.
+      $testInstanceState = "HKLM:\SOFTWARE\Cloudbase Solutions\Cloudbase-Init\b9517879-4e93-4a1a-9073-4ae0ddfac27c"
+      if (Test-Path $testInstanceState) {
+          Remove-Item $testInstanceState -Recurse -Force
+      }
+
       Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyBeforeAllPlugins
 
       $configFile = "./test-resources/$($env:CLOUD_PROFILE)/cloudbase-init.conf"
@@ -236,7 +247,12 @@ windows-functional-tests:
           throw "Cloudbase-Init functional execution did not complete cleanly."
       }
 
-      Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins
+      $pesterResult = Invoke-Pester test-resources/functional-tests `
+          -Output Detailed -FullNameFilter TestVerifyAfterAllPlugins `
+          -PassThru
+      if ($pesterResult.FailedCount -gt 0) {
+          throw "Pester functional assertions failed: $($pesterResult.FailedCount)"
+      }
   after_script:
     - |
       $configDrive = Join-Path $env:CI_PROJECT_DIR `
