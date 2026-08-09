@@ -31,7 +31,7 @@ jobs:
     - name: Run Cloudbase-Init unit tests with tox
       shell: bash
       run: |
-        tox -e py3,pep8,cover,docs
+        tox -e py314,pep8,cover,docs
   windows-unit-tests:
     runs-on: windows-latest
     strategy:
@@ -54,7 +54,7 @@ jobs:
     - name: Run Cloudbase-Init unit tests with tox
       shell: cmd
       run: |
-        tox -e py3,pep8
+        tox -e py314,pep8
   windows-functional-tests:
     runs-on: windows-latest
     strategy:
