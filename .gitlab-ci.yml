@@ -178,6 +178,25 @@ windows-functional-tests:
           - oracle
   script:
     - git clone --depth 1 --branch $env:TEST_RESOURCES_BRANCH $env:TEST_RESOURCES test-resources
+    - |
+      # The upstream NoCloud fixture intentionally contains no password or
+      # WinRM certificate metadata. Do not run the certificate-auth plugin in
+      # that fixture: it requires a password and would otherwise produce an
+      # unrelated error before the NoCloud network assertions are evaluated.
+      if ($env:CLOUD_PROFILE -eq "nocloud") {
+          $configFile = "test-resources/nocloud/cloudbase-init.conf"
+          $listenerPlugin = "cloudbaseinit.plugins.windows.winrmlistener.ConfigWinRMListenerPlugin"
+          $certificateAuthPlugin = "cloudbaseinit.plugins.windows.winrmcertificateauth.ConfigWinRMCertificateAuthPlugin"
+          $pluginSequence = "$listenerPlugin,$certificateAuthPlugin"
+          $config = Get-Content $configFile -Raw
+          if (-not $config.Contains($pluginSequence)) {
+              throw "The NoCloud fixture plugin list has changed unexpectedly."
+          }
+          $config = $config.Replace(
+              $pluginSequence,
+              $listenerPlugin)
+          Set-Content $configFile -Value $config -NoNewline
+      }
     - Invoke-Python -W ignore -m pip install --upgrade pip
     - Invoke-Python -W ignore -m pip install -c $env:UPPER_CONSTRAINTS --upgrade --force-reinstall -r requirements.txt
     - Invoke-Python -W ignore -m pip install .
