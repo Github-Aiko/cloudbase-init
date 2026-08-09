@@ -154,6 +154,12 @@ default:
           }
       }
       Invoke-Python --version
+      $pythonScripts = & $script:PythonExecutable `
+          (@($script:PythonPrefixArguments) + @("-c", "import sysconfig; print(sysconfig.get_path('scripts'))"))
+      if ($LASTEXITCODE -ne 0 -or -not $pythonScripts) {
+          throw "Unable to discover the Python scripts directory."
+      }
+      $env:PATH = "$($pythonScripts | Select-Object -Last 1);$env:PATH"
 
 windows-unit-tests:
   stage: test
@@ -176,9 +182,16 @@ windows-functional-tests:
     - Invoke-Python -W ignore -m pip install -c $env:UPPER_CONSTRAINTS --upgrade --force-reinstall -r requirements.txt
     - Invoke-Python -W ignore -m pip install .
     - |
-      if (-not (Get-Module -ListAvailable -Name Pester)) {
-          Install-Module -Force -AllowClobber -Confirm:$false Pester
+      $pester = Get-Module -ListAvailable -Name Pester |
+          Where-Object { $_.Version -ge [version]"5.0.0" } |
+          Sort-Object Version -Descending |
+          Select-Object -First 1
+      if (-not $pester) {
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Scope AllUsers `
+              -Force -AllowClobber -Confirm:$false
       }
+      Import-Module Pester -MinimumVersion 5.0.0 -Force
+      Write-Host "Using Pester $((Get-Module Pester).Version)"
       $env:CLOUD = $env:CLOUD_PROFILE
       $env:TEST_ARCHITECTURE = "x64"
       Invoke-Pester test-resources/functional-tests -Output Detailed -FullNameFilter TestVerifyBeforeAllPlugins
