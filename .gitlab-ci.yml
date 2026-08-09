@@ -212,7 +212,7 @@ default:
 
           & $Executable ($PrefixArguments + @(
               "-c",
-              "import pathlib, sys, sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 14) and (pathlib.Path(sysconfig.get_path('include')) / 'Python.h').is_file() else 1)"
+              "import pathlib, sys, sysconfig; paths = (sysconfig.get_path('include'), sysconfig.get_config_var('INCLUDEPY')); raise SystemExit(0 if sys.version_info[:2] == (3, 14) and all(path and (pathlib.Path(path) / 'Python.h').is_file() for path in paths) else 1)"
           )) 2>$null
           return $LASTEXITCODE -eq 0
       }
@@ -220,32 +220,33 @@ default:
       $script:PythonExecutable = $null
       $script:PythonPrefixArguments = @()
 
-      $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
-      if ($launcher -and (Test-Python314 $launcher.Source @("-3.14"))) {
-          $script:PythonExecutable = $launcher.Source
-          $script:PythonPrefixArguments = @("-3.14")
+      $knownPythonPaths = @(
+          "C:\Python314\python.exe",
+          "$env:ProgramFiles\Python314\python.exe",
+          "$env:ProgramFiles\Python\Python314\python.exe",
+          "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+          "$env:CI_PROJECT_DIR\.python-3.14\python.exe"
+      )
+      foreach ($pythonPath in $knownPythonPaths) {
+          if (Test-Python314 $pythonPath) {
+              $script:PythonExecutable = $pythonPath
+              break
+          }
+      }
+
+      if (-not $script:PythonExecutable) {
+          $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+          if ($launcher -and
+              (Test-Python314 $launcher.Source @("-3.14"))) {
+              $script:PythonExecutable = $launcher.Source
+              $script:PythonPrefixArguments = @("-3.14")
+          }
       }
 
       if (-not $script:PythonExecutable) {
           $python = Get-Command python.exe -ErrorAction SilentlyContinue
           if ($python -and (Test-Python314 $python.Source)) {
               $script:PythonExecutable = $python.Source
-          }
-      }
-
-      if (-not $script:PythonExecutable) {
-          $knownPythonPaths = @(
-              "C:\Python314\python.exe",
-              "$env:ProgramFiles\Python314\python.exe",
-              "$env:ProgramFiles\Python\Python314\python.exe",
-              "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
-              "$env:CI_PROJECT_DIR\.python-3.14\python.exe"
-          )
-          foreach ($pythonPath in $knownPythonPaths) {
-              if (Test-Python314 $pythonPath) {
-                  $script:PythonExecutable = $pythonPath
-                  break
-              }
           }
       }
 
@@ -333,6 +334,8 @@ default:
           }
       }
       Invoke-Python --version
+      Invoke-Python -c `
+          "import sys, sysconfig; print('Python executable:', sys.executable); print('Python INCLUDEPY:', sysconfig.get_config_var('INCLUDEPY'))"
       $pythonScripts = & $script:PythonExecutable `
           (@($script:PythonPrefixArguments) + @("-c", "import sysconfig; print(sysconfig.get_path('scripts'))"))
       if ($LASTEXITCODE -ne 0 -or -not $pythonScripts) {
