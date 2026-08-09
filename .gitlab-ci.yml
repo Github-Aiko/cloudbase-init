@@ -296,6 +296,27 @@ windows-functional-tests:
               }
               Set-Content $functionalTestsFile -Value $functionalTests -NoNewline
           }
+
+          # The upstream cloud-config uses a plain mkdir command, which exits
+          # with code 1 after the first run on a persistent runner. Make only
+          # this fixture command idempotent; do not delete retained data.
+          if ($env:CLOUD_PROFILE -eq "nocloud") {
+              $userDataFile = "test-resources/nocloud/cloudbase-init-metadata/user-data"
+              $mkdirCommand = "    - 'mkdir c:\runcmd'"
+              $idempotentMkdirCommand = "    - 'if not exist c:\runcmd mkdir c:\runcmd'"
+          }
+          else {
+              $userDataFile = "test-resources/vmwareguest/mock-rpctool.py"
+              $mkdirCommand = "    - 'mkdir c:\\runcmd'"
+              $idempotentMkdirCommand = "    - 'if not exist c:\\runcmd mkdir c:\\runcmd'"
+          }
+          $userData = Get-Content $userDataFile -Raw
+          if (-not $userData.Contains($mkdirCommand)) {
+              throw "The upstream $($env:CLOUD_PROFILE) runcmd fixture has changed unexpectedly."
+          }
+          $userData = $userData.Replace(
+              $mkdirCommand, $idempotentMkdirCommand)
+          Set-Content $userDataFile -Value $userData -NoNewline
       }
 
       # The upstream NoCloud fixture intentionally contains no password or
@@ -367,7 +388,8 @@ windows-functional-tests:
           $networkAfterReplacement = @(
               'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
               '    It "the Proxmox adapter should have both static address families" {'
-              '        $metadata = Get-Content -Raw -Path "$here/../nocloud/cloudbase-init-metadata/meta-data" | ConvertFrom-Json'
+              '        $metadataPath = Join-Path $env:CI_PROJECT_DIR "test-resources/nocloud/cloudbase-init-metadata/meta-data"'
+              '        $metadata = Get-Content -Raw -Path $metadataPath | ConvertFrom-Json'
               '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
               '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
               '        $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()'

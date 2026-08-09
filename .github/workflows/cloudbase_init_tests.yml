@@ -97,6 +97,17 @@ jobs:
                 "python -m pip install pyinstaller").Replace(
                 $pyInstallerCommand,
                 'python -m PyInstaller -F "${rpcToolPyPath}"')
+
+            $userDataFile = "test-resources/vmwareguest/mock-rpctool.py"
+            $mkdirCommand = "    - 'mkdir c:\\runcmd'"
+            $idempotentMkdirCommand = "    - 'if not exist c:\\runcmd mkdir c:\\runcmd'"
+            $userData = Get-Content $userDataFile -Raw
+            if (-not $userData.Contains($mkdirCommand)) {
+                throw "The upstream VMware runcmd fixture has changed unexpectedly."
+            }
+            $userData = $userData.Replace(
+                $mkdirCommand, $idempotentMkdirCommand)
+            Set-Content $userDataFile -Value $userData -NoNewline
         }
 
         if ($cloudProfile -eq "nocloud") {
@@ -112,6 +123,17 @@ jobs:
             $config = $config.Replace($pluginSequence, $listenerPlugin)
             $config = $config.Replace(",${setPasswordPlugin}", "")
             Set-Content $configFile -Value $config -NoNewline
+
+            $userDataFile = "test-resources/nocloud/cloudbase-init-metadata/user-data"
+            $mkdirCommand = "    - 'mkdir c:\runcmd'"
+            $idempotentMkdirCommand = "    - 'if not exist c:\runcmd mkdir c:\runcmd'"
+            $userData = Get-Content $userDataFile -Raw
+            if (-not $userData.Contains($mkdirCommand)) {
+                throw "The upstream NoCloud runcmd fixture has changed unexpectedly."
+            }
+            $userData = $userData.Replace(
+                $mkdirCommand, $idempotentMkdirCommand)
+            Set-Content $userDataFile -Value $userData -NoNewline
 
             $networkInterfaces = @(
                 "auto eth0",
@@ -152,7 +174,8 @@ jobs:
             $networkAfterReplacement = @(
                 'function after.cloudbaseinit.plugins.common.networkconfig.NetworkConfigPlugin {'
                 '    It "the Proxmox adapter should have both static address families" {'
-                '        $metadata = Get-Content -Raw -Path "$here/../nocloud/cloudbase-init-metadata/meta-data" | ConvertFrom-Json'
+                '        $metadataPath = Join-Path $env:GITHUB_WORKSPACE "test-resources/nocloud/cloudbase-init-metadata/meta-data"'
+                '        $metadata = Get-Content -Raw -Path $metadataPath | ConvertFrom-Json'
                 '        $macMatch = [regex]::Match($metadata."network-interfaces", "(?im)^\s*hwaddress\s+ether\s+(\S+)")'
                 '        if (-not $macMatch.Success) { throw "No Proxmox hwaddress was found in meta-data" }'
                 '        $expectedMac = $macMatch.Groups[1].Value.Replace(":", "").Replace("-", "").ToUpperInvariant()'
