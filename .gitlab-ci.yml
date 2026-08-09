@@ -22,17 +22,76 @@ default:
     key: "pip-$CI_JOB_NAME_SLUG"
     paths:
       - .cache/pip/
+      - .python-3.14/
   before_script:
     - |
       $ErrorActionPreference = "Stop"
-      function Invoke-Python {
-          if (Get-Command py.exe -ErrorAction SilentlyContinue) {
-              & py.exe -3.14 @args
-          } elseif (Get-Command python.exe -ErrorAction SilentlyContinue) {
-              & python.exe @args
-          } else {
-              throw "Python 3.14 is not installed or is not available on PATH."
+      function Test-Python314 {
+          param(
+              [Parameter(Mandatory = $true)]
+              [string] $Executable,
+              [string[]] $PrefixArguments = @()
+          )
+
+          if (-not (Test-Path $Executable -PathType Leaf)) {
+              return $false
           }
+
+          & $Executable ($PrefixArguments + @(
+              "-c",
+              "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 14) else 1)"
+          )) 2>$null
+          return $LASTEXITCODE -eq 0
+      }
+
+      $script:PythonExecutable = $null
+      $script:PythonPrefixArguments = @()
+
+      $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
+      if ($launcher -and (Test-Python314 $launcher.Source @("-3.14"))) {
+          $script:PythonExecutable = $launcher.Source
+          $script:PythonPrefixArguments = @("-3.14")
+      }
+
+      if (-not $script:PythonExecutable) {
+          $python = Get-Command python.exe -ErrorAction SilentlyContinue
+          if ($python -and (Test-Python314 $python.Source)) {
+              $script:PythonExecutable = $python.Source
+          }
+      }
+
+      if (-not $script:PythonExecutable) {
+          $knownPythonPaths = @(
+              "$env:ProgramFiles\Python314\python.exe",
+              "$env:ProgramFiles\Python\Python314\python.exe",
+              "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+              "$env:CI_PROJECT_DIR\.python-3.14\python.exe"
+          )
+          foreach ($pythonPath in $knownPythonPaths) {
+              if (Test-Python314 $pythonPath) {
+                  $script:PythonExecutable = $pythonPath
+                  break
+              }
+          }
+      }
+
+      if (-not $script:PythonExecutable) {
+          $pythonManager = "C:\Program Files\PyManager\pymanager.exe"
+          $pythonTarget = "$env:CI_PROJECT_DIR\.python-3.14"
+          if (-not (Test-Path $pythonManager -PathType Leaf)) {
+              throw "Python 3.14 was not found and Python Install Manager is unavailable at $pythonManager. Restart the runner service after installing Python, or install Python Install Manager."
+          }
+
+          & $pythonManager install --target=$pythonTarget --force --update 3.14
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python Install Manager failed with exit code $LASTEXITCODE."
+          }
+          $script:PythonExecutable = "$pythonTarget\python.exe"
+      }
+
+      function Invoke-Python {
+          $pythonArguments = @($script:PythonPrefixArguments) + @($args)
+          & $script:PythonExecutable $pythonArguments
           if ($LASTEXITCODE -ne 0) {
               throw "Python command failed with exit code $LASTEXITCODE."
           }
