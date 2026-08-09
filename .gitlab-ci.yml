@@ -17,6 +17,10 @@ variables:
 default:
   tags:
     - windows
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
   hooks:
     pre_get_sources_script:
       - |
